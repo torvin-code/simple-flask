@@ -1,11 +1,14 @@
 import threading
 import os
+import re
 import time
 from flask import Flask, request
 import requests
 import trafilatura
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.formatters import TextFormatter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,12 +56,22 @@ def callback_query(call):
             link = lines[-1].strip()
             if link.startswith(substring):
                 text = lines[0].replace('[Перевод]', '').strip()
-                if "habr.com" in link:
-                    link = link.split('?')[0]
-                text_article = parser(link)
-                if text_article is None:
-                    return
-                promt = f"Сделай краткое изложение (2500-3000 символа) статьи: {text_article}"
+                if 'youtube.com' in link:
+                     transcript_video = extract_youtube_transcript(link)
+                     if transcript_video is None:
+                        new_text = f"{text}\n\nНе удалось получить текст видео\n\n<a href=\"{link}\">{link}</a>"
+                        bot.edit_message_text(new_text, chat_id, message_id, parse_mode='HTML', reply_markup=keyboard())
+                        return
+                     promt = 'Расскажи о чем это видео? Удаляй мусорные фразы и исправь орфографию: \n' + text + '\n' + transcript_video
+                else:
+                    if "habr.com" in link:
+                        link = link.split('?')[0]
+                    text_article = parser(link)
+                    if text_article is None:
+                        new_text = f"{text}\n\nНе удалось получить текст статьи с сайта\n\n<a href=\"{link}\">{link}</a>"
+                        bot.edit_message_text(new_text, chat_id, message_id, parse_mode='HTML', reply_markup=keyboard())
+                        return
+                    promt = f"Сделай краткое изложение (2500-3000 символа) статьи: {text_article}"
                 text_gemini = gemini_send_message(promt)
                 try:
                     new_text = f"{text}\n\n{text_gemini}\n\n{link}"
@@ -126,6 +139,22 @@ def parser(url):
     except:
         pass
 
+
+def extract_youtube_transcript(youtube_url):
+    transcription = video_id = None
+    try:
+        video_id_match = re.search(r"(?<=v=)[^&]+|(?<=youtu.be/)[^?|\n]+", youtube_url)
+        video_id = video_id_match.group(0) if video_id_match else None
+        if video_id is not None:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=('ru', 'en'))
+            transcription = TextFormatter().format_transcript(transcript)
+            if transcription and transcription is not None:
+                transcription = transcription.replace('[Music]', '')
+                transcription = transcription.replace('[Applause]', '')
+                if len(transcription) > 10:
+                    return transcription
+    except Exception as e:
+        pass
 
 def keyboard():
     markup = InlineKeyboardMarkup()
